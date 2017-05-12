@@ -10,8 +10,10 @@ import time
 import copy
 import cProfile
 import pickle
-# several hacks, didn't realize dict could not use lits as keys so I just used 
-# str(list) as the key instead
+
+# I'm worried that algorithm is not exactly zero sum so is missing that it might 
+# be good for me for opponent to take card instead of adding to a sequence
+# so, currently regret is only trying to get the best score, not beat opponent
 
 # make history and object and give it a .__str__ method
 
@@ -19,11 +21,6 @@ import pickle
 
 # GameTree has class variable game_parameters
 # Card points are negative, chip points are positive
-
-
-
-def tostr(history):
-    return ''.join(str(c) for c in history)
 
 class CfrTrainer(object):
     """Runs counter factual regret minimization training algorithm"""
@@ -43,11 +40,14 @@ class CfrTrainer(object):
     def cfr(self, history, i, k, probs):  # p0, p1):
         """Counter factual regret minimization algorithm"""
         # check if history is terminal
+        opponent = (i+1) % GameTree.game_parameters['NUM_PLAYERS']
         if GameTree.check_if_terminal(history):
-            return self.game_tree.get_score(history)[i]
+            # change score to be points more than opponent? 
+            score = self.game_tree.get_score(history)
+            return score[i]-score[opponent]
         [node_type, node] = self.game_tree.get_node(history)
         if node_type == 'chance':  # here node is actually the new history
-            return self.cfr(node, i, k, probs) #p0, p1)
+            return self.cfr(node, i, k, probs)
         else:
             # initialize variables
             node_utility = 0
@@ -62,8 +62,7 @@ class CfrTrainer(object):
             if node.state['current_player'] == i:
                 for a in actions:
                     reg = action_utility[a] - node_utility
-                    node.regret_table[a] += probs[(i+1) %
-                                   GameTree.game_parameters['NUM_PLAYERS']]*reg
+                    node.regret_table[a] += probs[opponent]*reg
                     node.strategy_table[a] += probs[i]*node.strat[a]
                 node.set_strategy()
         return node_utility
@@ -84,31 +83,40 @@ class GameTree(dict):
         """Return game node given history key or make not if nonexistent"""
         # this doesn't get terminal nodes because they end in 't'
         if not history or history[-1] == 't':  # empty history or card taken
-            if tostr(history) not in self:
-                self[tostr(history)] = DrawNode(history)
-            new_history = history + [self[tostr(history)].draw()]
+            if self.to_str(history) not in self:
+                self[self.to_str(history)] = DrawNode(history)
+            new_history = history + [self[self.to_str(history)].draw()]
             return ['chance', new_history]
         else:   # a player node
-            if tostr(history) not in self:
-                self[tostr(history)] = PlayerNode(history, self)
-            self[tostr(history)].node_visit += 1
-            return ['player', self[tostr(history)]]
+            if self.to_str(history) not in self:
+                self[self.to_str(history)] = PlayerNode(history, self)
+            self[self.to_str(history)].node_visit += 1
+            return ['player', self[self.to_str(history)]]
 
     def get_score(self, history):
         """Get the game score from a player node with history"""
         # make last node to have final game state
         # not using get_node because it misinterprets 't' as game continuing
-        if tostr(history) not in self:
-            self[tostr(history)] = PlayerNode(history, self)
-        return self[tostr(history)].calculate_score()
+        if self.to_str(history) not in self:
+            self[self.to_str(history)] = PlayerNode(history, self)
+        return self[self.to_str(history)].calculate_score()
 
-    def save_tree(self):
+    def save_tree(self, filename=None):
         """Save game tree as pickle"""
-        pickle.dump(self, open('tree.nothanks', 'wb'))
+        if filename is None:
+            filename = str(GameTree.game_parameters['STARTING_CHIPS']) + \
+                '_' + ''.join(str(c) for c in GameTree.game_parameters['CARD_NUMBERS']) + \
+                '_' + str(GameTree.game_parameters['DECK_SIZE'])
+        pickle.dump(self, open(filename + '.nothanks', 'wb'))
+
+    @staticmethod
+    def to_str(history):
+        return ''.join(str(c) for c in history)
 
     @staticmethod
     def check_if_terminal(history):
         return DrawNode.check_if_terminal(history)
+
 
 class DrawNode(object):
     """Chance node that draws card from the deck"""
@@ -141,7 +149,7 @@ class DrawNode(object):
 
 class PlayerNode(object):
     """Node that contain player actions and strategies"""
-    
+
     def __init__(self, history=None, game_tree=None):
         """Initialize node with game history leading to this node"""
         self.history = history
@@ -154,7 +162,7 @@ class PlayerNode(object):
         self.node_visit = 1
 
     def build_game_state(self, game_tree):
-        """Build game state by adjusting state of previous PlayerNode in 
+        """Build game state by adjusting state of previous PlayerNode in
         the history"""
         # this is probably redundant (and memory intensive) because I can parse
         # game history for this information but I'm lazy
@@ -170,8 +178,8 @@ class PlayerNode(object):
         else:
             previous_action = self.history[-1]
             if previous_action == 'b':  # last guy placed bet
-                self.state =  copy.deepcopy(game_tree[
-                                            tostr(self.history[:-1])].state)
+                [node_type, node] = game_tree.get_node(self.history[:-1])
+                self.state = copy.deepcopy(node.state)
                 self.state['chips'] += 1  # add a chip to the card
                 curr_player = self.state['current_player']
                 self.state[curr_player]['chips'] -= 1
@@ -180,24 +188,24 @@ class PlayerNode(object):
             elif previous_action == 't':  # last action of game was take card
                 two_actions_ago = self.history[-2]
                 if two_actions_ago == 'b':  # bet on last card
-                    self.state = copy.deepcopy(game_tree[
-                                               tostr(self.history[:-1])].state)
+                    [node_type, node] = game_tree.get_node(self.history[:-1])
+                    self.state = copy.deepcopy(node.state)
                     self.state['chips'] += 1  # add a chip to the card
                     curr_player = self.state['current_player']
                     self.state[curr_player]['chips'] -= 1
                     self.state['current_player'] = (curr_player + 1) % \
                         GameTree.game_parameters['NUM_PLAYERS']
                 else:  # card was drawn two actions ago
-                    self.state = copy.deepcopy(game_tree[
-                                               tostr(self.history[:-1])].state)
+                    [node_type, node] = game_tree.get_node(self.history[:-1])
+                    self.state = copy.deepcopy(node.state)
                     curr_player = self.state['current_player']
                 self.state[curr_player]['cards'].append(self.state['face_up'])
                 self.state[curr_player]['chips'] += self.state['chips']
                 self.state['chips'] = 0  # reset chips on card
-                self.state['face_up'] = -1  # signal this a terminal node 
+                self.state['face_up'] = -1  # signal this a terminal node
             else:  # last action was drawing a new card, same current player
-                self.state = copy.deepcopy(game_tree[
-                                           tostr(self.history[:-2])].state)
+                [node_type, node] = game_tree.get_node(self.history[:-2])
+                self.state = copy.deepcopy(node.state)
                 curr_player = self.state['current_player']
                 self.state[curr_player]['chips'] += self.state['chips']
                 self.state[curr_player]['cards'].append(self.state['face_up'])
@@ -239,15 +247,14 @@ class PlayerNode(object):
             for a in self.strategy_table:
                 average_strategy[a] = self.strategy_table[a]/normalization
         return average_strategy
-        
-        
+
     def calculate_score(self):
         """Calculate current score for this node for all players"""
         scores = [self.state[i]['chips']-sum([c for c in self.state[i]['cards']
                     if c-1 not in self.state[i]['cards']])
                     for i in range(GameTree.game_parameters['NUM_PLAYERS'])]
         return scores
-        
+
     def __str__(self):
         """Return string version of this node. (string of state)"""
         string = ''
@@ -257,19 +264,19 @@ class PlayerNode(object):
             string = string + ' '.join(str(c) for c in self.state[i]['cards'])
             string = string + '\n'
         string = string + str(self.state['chips']) + ' chips on faceup ' + \
-                          str(self.state['face_up']) #+ '\n'
+                          str(self.state['face_up'])
         return string
 
 
 class NoThanks(object):
     """Game No Thanks vs. trained AI"""
-    def __init__(self, game_tree=None, player=0):
+    def __init__(self, game_tree=None):
         self.game_tree = game_tree
-        self.player = player
 
-    def play(self):
+    def play(self, player=0):
         """Play No Thanks against a CFR trained opponent"""
         self.history = []
+        self.player = player
         while not GameTree.check_if_terminal(self.history):
             [node_type, node] = self.game_tree.get_node(self.history)
             if node_type == 'chance':  # here node is actually the new history
@@ -277,35 +284,27 @@ class NoThanks(object):
             else:
                 if self.player == node.state['current_player']:
                     print(node)
+                    print(node.get_average_strategy())
                     # no error checking on input!
-                    action = input('Pick an action ' + 
-                                   ' '.join(node.get_actions()) + ': ')
+                    action = input('Pick an action - ' +
+                                   ' or '.join(node.get_actions()) + ': ')
                     print('\n\n\n\n')
                 else:
                     strat = node.get_average_strategy()
                     # pick an action according to average strategy profile
                     action = choice(list(strat.keys()), p=list(strat.values()))
                 self.history = self.history + [action]
-        print(self.game_tree[tostr(self.history)])
-        print(self.game_tree.get_score(self.history))
+        print(self.game_tree.get_node(self.history)[1])
+        score = self.game_tree.get_score(self.history)
+        print(score)
+        return score
 
 
 def main():
     trainer = CfrTrainer()
     start_time = time.time()
     trainer.train(iterations=1000)
-    print(time.time() - start_time)    
+    print(time.time() - start_time)
 
 if __name__ == "__main__":
     main()
-
-
-class History(list):
-    """List subclass to overide __str__ method for dictionary hashing"""
-    def __str__(self):
-        return ''.join(str(c) for c in self)
-    
-    def __add__(self, other):
-        """Add another list to this one. Convert other to History object"""
-        return History(super().__add__(other))
-    # slicing doesn't return History object
