@@ -18,10 +18,13 @@ class NoThanks(object):
 
     def __init__(self, game_parameters=None):
         self.game_tree = GameTree(game_parameters)
+        #random.seed(0)
 
     def train(self, iterations=10):
         """Runs cfr iterations"""
-        self.utils = [iterations*[0], iterations*[0]]
+        #self.utils = [iterations*[0], iterations*[0]]
+        self.utils = [iterations*[0]]*self.game_tree.game_parameters[
+                                                                'NUM_PLAYERS']
         NUM_PLAYERS = self.game_tree.game_parameters['NUM_PLAYERS']
         for k in range(iterations):
             for i in range(NUM_PLAYERS):
@@ -32,8 +35,8 @@ class NoThanks(object):
         history = ''
         self.player = player
         while True:
-            [node_type, node] = self.game_tree.get_node(history)
-            if node_type == 'chance':
+            node = self.game_tree.get_node(history)
+            if isinstance(node, DrawNode): 
                 action = node.draw()
                 if action is None:  # terminal checking is done in draw
                     break
@@ -51,14 +54,14 @@ class NoThanks(object):
                     action = choice(list(strat.keys()), p=list(strat.values()))
             history = history + ',' + str(action)
         print(node)
-        print(self.game_tree.get_node(history)[1].scores)
+        print(self.game_tree.get_node(history).scores)
         return history
 
     def cfr(self, history, i, k, probs):
         """Counter factual regret minimization algorithm"""
         opponent = (i+1) % self.game_tree.game_parameters['NUM_PLAYERS']
-        [node_type, node] = self.game_tree.get_node(history)
-        if node_type == 'chance':  
+        node = self.game_tree.get_node(history)
+        if isinstance(node, DrawNode):    # chance node
             a = node.draw()
             if a is None:  # terminal checking is done in draw
                 return node.scores[i]-node.scores[opponent]
@@ -90,6 +93,7 @@ class GameTree(dict):
 
     def __init__(self, game_parameters=None):
         super().__init__()
+        self.state_dict = dict()
         if game_parameters is None:
             game_parameters = GameTree.game_parameters
         self.game_parameters = game_parameters
@@ -97,16 +101,50 @@ class GameTree(dict):
     def get_node(self, history):
         """Return game node given history key or make not if nonexistent"""
         # get a DrawNode if history is empty or last action 't' not terminal
-        if not history or history[-1] == 't':
-            if history not in self:
-                self[history] = DrawNode(history, self)
-            self[history].node_visit += 1
-            return ['chance', self[history]]
-        else:   # a player node
-            if history not in self:
-                self[history] = PlayerNode(history, self)
-            self[history].node_visit += 1
-            return ['player', self[history]]
+        if history not in self:
+            if not history or history[-1] == 't':
+                new_node = DrawNode(history, self)
+            else:   # a player node
+                new_node = PlayerNode(history, self)
+            # assumes no PlayerNode and DrawNode share same state
+            self[history] = new_node.state_string()
+            if self[history] not in self.state_dict:
+                self.state_dict[self[history]] = new_node
+        self.state_dict[self[history]].node_visit += 1
+        return self.state_dict[self[history]]
+#        
+#    def get_node(self, history):
+#        """Return game node given history key or make not if nonexistent"""
+#        # get a DrawNode if history is empty or last action 't' not terminal
+#        if history not in self:
+#            if not history or history[-1] == 't':
+#                new_node = DrawNode(history, self)
+#            else:   # a player node
+#                new_node = PlayerNode(history, self)
+#            # assumes no PlayerNode and DrawNode share same state
+#            ss = new_node.state_string()
+#            if ss not in self.state_dict:
+#                self.state_dict[ss] = new_node
+#                self[history] = new_node
+#            else:
+#                self[history] = self.state_dict[ss]
+#        self[history].node_visit += 1
+#        return self[history]
+#            
+
+#    def get_node(self, history):
+#        """Return game node given history key or make not if nonexistent"""
+#        # get a DrawNode if history is empty or last action 't' not terminal
+#        if not history or history[-1] == 't':
+#            if history not in self:
+#                self[history] = DrawNode(history, self)
+#            self[history].node_visit += 1
+#            return self[history]
+#        else:   # a player node
+#            if history not in self:
+#                self[history] = PlayerNode(history, self)
+#            self[history].node_visit += 1
+#            return self[history]
 
     def get_score(self, history):
         """Get the game score from a player node with history"""
@@ -129,7 +167,8 @@ class GameTree(dict):
         """Split history into last node and action taken by that node"""
         prev = history.rfind(',')
         last_action = history[prev+1:]
-        return [self[history[:prev]], last_action]
+        return [self.state_dict[self[history[:prev]]], last_action]
+        #return [self[history[:prev]], last_action]
 
 
 class Node(object):
@@ -151,8 +190,19 @@ class Node(object):
                        self.state[i]['cards']])
                        for i in range(self.game_parameters['NUM_PLAYERS'])]
 
+    def state_string(self):
+        string = ''
+        for player in range(self.game_parameters['NUM_PLAYERS']):
+            string += str(player) + \
+                      str(sorted(self.state[player]['cards'])) + \
+                      str(self.state[player]['chips']) + ','
+        string += ':' + str(self.state['current_player']) + \
+                  ':' + str(self.state['chips']) +\
+                  ':' + str(self.state['face_up'])
+        return string
+
     def __str__(self):
-        """Return string version of this node. (string of state)"""
+        """Return human readable string version of this node. """
         string = ''
         for i in range(self.game_parameters['NUM_PLAYERS']):
             string = string + 'Player ' + str(i) + ' chips: ' + \
